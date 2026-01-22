@@ -164,13 +164,32 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    TO_BE_IMPLEMENTED();
+    ptrdiff_t expected = 1;
+    for (size_t i = 0; i < _meta.shape.size(); ++i) {
+        size_t dim_index = this->ndim() - 1 - i;
+        if (_meta.strides[dim_index] != expected) {
+            return false;
+        }
+        expected *= static_cast<ptrdiff_t>(_meta.shape[dim_index]);
+    }
     return true;
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    size_t n_dim = this->ndim();
+    CHECK_ARGUMENT(order.size() == n_dim, "permute: order size mismatch");
+    std::vector<int> seen(n_dim, 0);
+    for (size_t i = 0; i < n_dim; ++i) {
+        CHECK_ARGUMENT(order[i] < n_dim, "permute: order index out of range");
+        CHECK_ARGUMENT(seen[order[i]] == 0, "permute: repeated index");
+        seen[order[i]] = 1;
+    }
+    TensorMeta meta = _meta;
+    for (size_t i = 0; i < n_dim; ++i) {
+        meta.shape[i] = _meta.shape[order[i]];
+        meta.strides[i] = _meta.strides[order[i]];
+    }
+    return std::shared_ptr<Tensor>(new Tensor(meta, _storage, _offset));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
@@ -184,7 +203,14 @@ tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
 }
 
 void Tensor::load(const void *src_) {
-    TO_BE_IMPLEMENTED();
+    core::context().setDevice(this->deviceType(), this->deviceId());
+    auto api = core::context().runtime().api();
+    size_t bytes = this->numel() * this->elementSize(); 
+    if (this->deviceType() == LLAISYS_DEVICE_CPU) {
+        api->memcpy_sync(this->data(), src_, bytes, LLAISYS_MEMCPY_H2H);
+    } else {
+        api->memcpy_sync(this->data(), src_, bytes, LLAISYS_MEMCPY_H2D);
+    }
 }
 
 tensor_t Tensor::contiguous() const {
