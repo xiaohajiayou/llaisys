@@ -193,13 +193,31 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    size_t n_e = 1;
+    for (size_t i = 0; i < shape.size(); i++) {
+        n_e *= shape[i];
+    }
+    CHECK_ARGUMENT(n_e == this->numel(), "view: shape size mismatch");
+    CHECK_ARGUMENT(this->isContiguous(), "view: only support contiguous stride");
+    std::vector<ptrdiff_t> new_stride(shape.size());
+    size_t tmp_stride = 1;
+    for (size_t i = 0; i < shape.size(); ++i) {
+        size_t dim_index = shape.size() - 1 - i;
+        new_stride[dim_index] = tmp_stride;
+        tmp_stride *= shape[dim_index];  
+    }
+    TensorMeta meta{_meta.dtype, shape, new_stride};
+    return std::shared_ptr<Tensor>(new Tensor(meta, _storage, _offset));
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    CHECK_ARGUMENT(dim < this->ndim(), "slice: dim out of range");
+    CHECK_ARGUMENT(start <= end, "slice: start > end");
+    CHECK_ARGUMENT(end <= _meta.shape[dim], "slice: end out of range");  
+    TensorMeta meta  = _meta;
+    meta.shape[dim] = end - start;
+    size_t offset = _offset + static_cast<size_t>(_meta.strides[dim] * start * this->elementSize());
+    return std::shared_ptr<Tensor>(new Tensor(meta, _storage, offset));
 }
 
 void Tensor::load(const void *src_) {
