@@ -12,9 +12,7 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
     ASSERT(attn_val->shape()[2] == q->shape()[2], "SelfAttention: head dim mismatch.");
     ASSERT(attn_val->shape()[2] == k->shape()[2], "SelfAttention: head dim mismatch.");
     ASSERT(attn_val->shape()[2] == v->shape()[2], "SelfAttention: head dim mismatch.");
-    // ASSERT(q->dtype() == LLAISYS_DTYPE_F32, "SelfAttention: q must be float32.");
-    // ASSERT(k->dtype() == LLAISYS_DTYPE_F32, "SelfAttention: k must be float32.");
-    // ASSERT(v->dtype() == LLAISYS_DTYPE_F32, "SelfAttention: v must be float32.");
+    CHECK_SAME_DTYPE(q->dtype(), k->dtype(), v->dtype());
     ASSERT(attn_val->isContiguous() && q->isContiguous() && k->isContiguous() && v->isContiguous(),
            "SelfAttention: all tensors must be contiguous.");
     switch (attn_val->deviceType()) {

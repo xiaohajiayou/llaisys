@@ -11,7 +11,7 @@
 namespace llaisys::ops::cpu {
 
 template<typename T>
-void self_attention_kernel(
+void self_attention_(
     T* out,
     const T* q,
     const T* k,
@@ -40,10 +40,12 @@ void self_attention_kernel(
 
             // ---- 1. 计算 QK^T ----
             for (size_t tk = 0; tk < kvlen; ++tk) {
-                if (tk > t) {         // causal mask
+                ptrdiff_t offset = static_cast<ptrdiff_t>(kvlen) - static_cast<ptrdiff_t>(qlen);
+                if (static_cast<ptrdiff_t>(tk) > static_cast<ptrdiff_t>(t) + offset) {
                     scores[tk] = -1e30f;
                     continue;
                 }
+                
 
                 const T* k_ptr = k + (tk * nkvhead + kv_h) * d;
 
@@ -111,21 +113,21 @@ void self_attention(tensor_t attn_val,
 
     switch (q->dtype()) {
     case LLAISYS_DTYPE_F32:
-        return self_attention_kernel(
+        return self_attention_(
             reinterpret_cast<float*>(attn_val->data()),
             reinterpret_cast<const float*>(q->data()),
             reinterpret_cast<const float*>(k->data()),
             reinterpret_cast<const float*>(v->data()),
             seqlen, total_len, nhead, nkvhead, d, dv, scale);
     case LLAISYS_DTYPE_BF16:
-        return self_attention_kernel(
+        return self_attention_(
             reinterpret_cast<llaisys::bf16_t*>(attn_val->data()),
             reinterpret_cast<const llaisys::bf16_t*>(q->data()),
             reinterpret_cast<const llaisys::bf16_t*>(k->data()),
             reinterpret_cast<const llaisys::bf16_t*>(v->data()),
             seqlen, total_len, nhead, nkvhead, d, dv, scale);
     case LLAISYS_DTYPE_F16:
-        return self_attention_kernel(
+        return self_attention_(
             reinterpret_cast<llaisys::fp16_t*>(attn_val->data()),
             reinterpret_cast<const llaisys::fp16_t*>(q->data()),
             reinterpret_cast<const llaisys::fp16_t*>(k->data()),
