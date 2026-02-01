@@ -204,7 +204,11 @@ class Qwen2:
             dev_ids,
             ndev,
         )
+        if not self._model:
+            raise RuntimeError("Failed to create Qwen2 model instance")
         self._weights_ptr = LIB_LLAISYS.llaisysQwen2ModelWeights(self._model)
+        if not self._weights_ptr:
+            raise RuntimeError("Failed to acquire Qwen2 weight slots")
         self._weights: LlaisysQwen2Weights = self._weights_ptr.contents
 
         self._np_dtype = _datatype_to_numpy_dtype(meta.dtype)
@@ -276,7 +280,12 @@ class Qwen2:
         if not token_ids:
             raise ValueError("token_ids must be non-empty")
         buf = (c_int64 * len(token_ids))(*[int(t) for t in token_ids])
-        return int(LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, buf, c_size_t(len(token_ids))))
+        next_token = int(
+            LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, buf, c_size_t(len(token_ids)))
+        )
+        if next_token < 0 or next_token >= self._meta_info.voc:
+            raise RuntimeError(f"Invalid token id returned from infer: {next_token}")
+        return next_token
 
     def generate(
         self,
