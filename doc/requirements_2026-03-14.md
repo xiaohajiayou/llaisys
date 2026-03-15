@@ -1,7 +1,9 @@
-# NovaInfer LLM 推理栈需求文档（2026-03-14）
+# LLM 推理栈需求文档（2026-03-14）
 
-本文件描述当前 NovaInfer LLM 推理栈的目标、范围、需求、约束与验收标准。本文不展开实现细节，设计方案见 `doc/novainfer_overview_2026-03-14.md`，测试方案见 `doc/novainfer_test_plan_2026-03-14.md`。
-
+本文件描述当前 LLM 推理栈的目标、范围、需求、约束与验收标准。本文不展开实现细节:
+1. 设计方案见 `doc/overview_2026-03-14.md`
+2. 测试方案见 `doc/test_plan_2026-03-14.md`。
+3. 性能验证：`doc/tutorial.md`
 ## 1. 目标与范围
 
 ### 1.1 目标

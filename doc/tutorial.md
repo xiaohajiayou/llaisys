@@ -141,13 +141,13 @@ PY
 
 ### 2.编译项目
 ```
-xmake f --mode=release --nv-gpu=y --nv-cudnn=y
+xmake f -c --mode=release --nv-gpu=y --nv-cudnn=y --nv-nccl=y
 xmake -j8
 xmake install
 
 pip install -e ./python[test]
 ```
-### 启动server服务
+### 3.启动server服务
 ```bash
 export CUDNN_ROOT=$HOME/opt/cudnn-linux-x86_64-9.18.1.3_cuda12-archive
 export LD_LIBRARY_PATH=$CUDNN_ROOT/lib:$LD_LIBRARY_PATH
@@ -189,25 +189,25 @@ python -m http.server 8081 -d webui
 注意右上角填推理服务器端口地址
 
 ## cudnn paged attention 版本 (性能相对较差,高性能走cudnn版本)
-### 编译项目
-```bash
-xmake f --mode=release --nv-gpu=y
-xmake -j1
+### 1.编译项目
+```
+xmake f -c --mode=release --nv-gpu=y --nv-cudnn=y --nv-nccl=y
+xmake -j8
 xmake install
 
 pip install -e ./python[test]
 ```
-### 启动server服务
+### 2.启动server服务 (性能相对较差,高性能走cudnn版本)
 ```bash
+LLAISYS_CUDA_PAGED_ATTN_BACKEND=native
 CUDA_VISIBLE_DEVICES=0 \
 PYTHONPATH=python python -m llaisys.server \
-  --model-path models/DeepSeek-R1-Distill-Qwen-1.5B \
+  --model-path /home/xiaohajiayou/NovaInfer/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
   --model-type qwen2 \
   --device nvidia \
-  --kv-cache-capacity-mode auto \
   --kv-cache-memory-utilization 0.9 \
   --host 127.0.0.1 \
-  --port 8000 \
+  --port 8665 \
   --verbose
 ```
 
@@ -278,10 +278,23 @@ LLAISYS_CUDA_PAGED_ATTN_BACKEND=cudnn \
 
 
 # 五 .性能优化
-## cpu推理性能优化
+## cpu推理性能优化-openmp
+通过openmp优化linear和attention算子
+### Linear 算子性能对比（OpenMP 优化）
 
+### Linear 算子性能对比（OpenMP 优化前后）
 
+| 状态 | out shape | x shape | w shape | dtype | Torch Time (ms) | LLAISYS Time (ms) | LLAISYS / Torch | 相对优化前提升 |
+|---|---|---|---|---|---:|---:|---:|---:|
+| 优化前 | (512, 4096) | (512, 4096) | (4096, 4096) | f32 | 36.89025 | 10289.27141 | 278.92x |- |
+| 优化后 | (512, 4096) | (512, 4096) | (4096, 4096) | f32 | 42.70074 | 223.55501 | 5.24x | 46.03x |
 
+### Attention 算子性能对比（优化前后）
+
+| 状态 | qlen | kvlen | nh | nkvh | hd | dtype | Torch Time (ms) | LLAISYS Time (ms) | 优化收益 |
+|---|---:|---:|---:|---:|---:|---|---:|---:|---|
+| 优化前 | 5 | 11 | 4 | 2 | 8 | f32 | 97.74043 | 59.16621 |- |
+| 优化后 | 5 | 11 | 4 | 2 | 8 | f32 | 96.20656 | 0.00781 | 7575.70x |
 ## nvidia平台性能优化-单卡 A100
 在 A100 集群上的性能验证结果，单卡 A100 上的 ours vs vLLM 通用基准
 2. 多卡 A100 上的 ours Tensor Parallel 吞吐扩展矩阵。
@@ -295,13 +308,41 @@ LLAISYS_CUDA_PAGED_ATTN_BACKEND=cudnn \
 - cuDNN 运行时: `9.18.1`（`cudnnGetVersion() = 91801`）
 - NCCL 动态库来自 Python 环境：`.../.venv/lib/python3.12/site-packages/nvidia/nccl/lib`
 ### 工作负载
+1. 单次对比case:
 
-使用 `scripts/run_perf_experiments.py` 的四组 case，模型固定为 `DeepSeek-R1-Distill-Qwen-1.5B`：
+| Case | num_seqs | Input Len | Output Len | max_num_seqs | max_num_batched_tokens | KV Cache Utilization | vLLM Fair Mode |
+|---|---:|---|---|---|---|---|---|
+| largeseqs_largebatch | 256 | 100–1024 | 100–1024 | 256 | 16384 | 0.9 | True |
 
-1. `smallseqs_tightbatch`
-2. `smallseqs_smallbatch`
-3. `largeseqs_smallbatch`
-4. `largeseqs_largebatch`
+### 行命令
+```
+export CUDNN_ROOT=opt/cudnn-linux-x86_64-9.18.1.3_cuda12-archive
+export LD_LIBRARY_PATH=$CUDNN_ROOT/lib:$LD_LIBRARY_PATH
+export CPATH=$CUDNN_ROOT/include:$CPATH
+export LIBRARY_PATH=$CUDNN_ROOT/lib:$LIBRARY_PATH
+CUDA_VISIBLE_DEVICES=0 \
+  LLAISYS_CUDA_PAGED_ATTN_BACKEND=cudnn \
+   python scripts/bench_compare_vllm.py\
+    --model-path /home/xiaohajiayou/NovaInfer/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
+    --backend novainfer \
+    --num-seqs 256 \
+    --min-input-len 100 \
+    --max-input-len 1024 \
+    --min-output-len 100 \
+    --max-output-len 1024 \
+    --max-model-len 4096 \
+    --seed 0 \
+    --max-num-seqs 256 \
+    --max-num-batched-tokens 16384
+```
+2. 使用 `scripts/run_perf_experiments.py` 的四组 case：
+
+| Case | num_seqs | Input Len | Output Len | max_num_seqs | max_num_batched_tokens | KV Cache Utilization | vLLM Fair Mode |
+|---|---:|---|---|---|---|---|---|
+| smallseqs_tightbatch | 20 | 100–1024 | 100–1024 | 20 | 4096 | 0.7 | True |
+| smallseqs_smallbatch | 20 | 100–1024 | 100–1024 | 20 | 8192 | 0.7 | True |
+| largeseqs_smallbatch | 256 | 100–1024 | 100–1024 | 256 | 8192 | 0.5 | True |
+| largeseqs_largebatch | 256 | 100–1024 | 100–1024 | 256 | 16384 | 0.5 | True |
 
 统一条件：
 
@@ -315,7 +356,7 @@ LLAISYS_CUDA_PAGED_ATTN_BACKEND=cudnn \
     - 关闭asyncscheduling:和我们的实现同步(因为我们没做对应的异步调度)
 
 ### 行命令
-- deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+#### deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 ```bash
 export CUDNN_ROOT=$HOME/opt/cudnn-linux-x86_64-9.18.1.3_cuda12-archive
 export LD_LIBRARY_PATH=$CUDNN_ROOT/lib:$LD_LIBRARY_PATH
@@ -341,7 +382,7 @@ python scripts/run_perf_experiments.py \
 | `largeseqs_smallbatch` | 7881.65 | 6714.42 | 1.174x |
 | `largeseqs_largebatch` | 7830.52 | 7433.24 | 1.053x |
 
-- deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+#### deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
 ```bash
 export CUDNN_ROOT=$HOME/opt/cudnn-linux-x86_64-9.18.1.3_cuda12-archive
 export LD_LIBRARY_PATH=$CUDNN_ROOT/lib:$LD_LIBRARY_PATH
