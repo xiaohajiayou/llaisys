@@ -320,7 +320,7 @@ export CUDNN_ROOT=opt/cudnn-linux-x86_64-9.18.1.3_cuda12-archive
 export LD_LIBRARY_PATH=$CUDNN_ROOT/lib:$LD_LIBRARY_PATH
 export CPATH=$CUDNN_ROOT/include:$CPATH
 export LIBRARY_PATH=$CUDNN_ROOT/lib:$LIBRARY_PATH
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=6 \
   LLAISYS_CUDA_PAGED_ATTN_BACKEND=cudnn \
    python scripts/bench_compare_vllm.py\
     --model-path /home/xiaohajiayou/NovaInfer/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
@@ -333,7 +333,8 @@ CUDA_VISIBLE_DEVICES=0 \
     --max-model-len 4096 \
     --seed 0 \
     --max-num-seqs 256 \
-    --max-num-batched-tokens 16384
+    --max-num-batched-tokens 16384 \
+    --vllm-fair-mode
 ```
 2. 使用 `scripts/run_perf_experiments.py` 的四组 case：
 
