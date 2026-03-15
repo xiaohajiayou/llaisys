@@ -2,20 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
 
 import json
 import os
 import re
 
 import numpy as np
-import safetensors
 
-from ctypes import POINTER, byref, c_int, c_int64, c_size_t, c_void_p
+from ctypes import POINTER, byref, cast, c_int, c_int32, c_void_p
 
 from ..libllaisys import LIB_LLAISYS, DeviceType, DataType
+from ..libllaisys.model import (
+    LlaisysModelCreateParams,
+    ModelForwardInput,
+    ModelForwardOutput,
+    ModelType,
+)
 from ..libllaisys.qwen2 import LlaisysQwen2Meta, LlaisysQwen2Weights
-from ..tensor import Tensor
+from ..bindings.tensor import Tensor
 
 
 _LAYER_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
@@ -48,6 +53,21 @@ _GLOBAL_NAMES: Dict[str, str] = {
     "model.norm.weight": "out_norm_w",
 }
 
+_TP_SHARD_DIM_BY_FIELD: Dict[str, int] = {
+    # Column-parallel (split output dim).
+    "attn_q_w": 0,
+    "attn_q_b": 0,
+    "attn_k_w": 0,
+    "attn_k_b": 0,
+    "attn_v_w": 0,
+    "attn_v_b": 0,
+    "mlp_gate_w": 0,
+    "mlp_up_w": 0,
+    # Row-parallel (split input dim).
+    "attn_o_w": 1,
+    "mlp_down_w": 1,
+}
+
 
 def _maybe_bfloat16_dtype() -> Optional[np.dtype]:
     try:
@@ -66,7 +86,7 @@ def _torch_dtype_to_datatype(torch_dtype: Optional[str]) -> DataType:
         return DataType.F32
     torch_dtype = torch_dtype.lower()
     if "bfloat16" in torch_dtype or torch_dtype == "bf16":
-        return DataType.BF16 if _BF16_DTYPE is not None else DataType.F32
+        return DataType.BF16
     if "float16" in torch_dtype or torch_dtype == "fp16" or torch_dtype == "f16":
         return DataType.F16
     if "float32" in torch_dtype or torch_dtype == "fp32" or torch_dtype == "f32":
@@ -79,9 +99,11 @@ def _datatype_to_numpy_dtype(dtype: DataType) -> np.dtype:
         return np.dtype(np.float32)
     if dtype == DataType.F16:
         return np.dtype(np.float16)
-    if dtype == DataType.BF16 and _BF16_DTYPE is not None:
-        return _BF16_DTYPE
-    # Fallback: use float32 even if meta says BF16 but runtime support is missing.
+    if dtype == DataType.BF16:
+        # Keep BF16 payload as-is even without ml_dtypes; uint16 preserves raw bits.
+        if _BF16_DTYPE is not None:
+            return _BF16_DTYPE
+        return np.dtype(np.uint16)
     return np.dtype(np.float32)
 
 
@@ -99,6 +121,120 @@ def _detach_tensor_handle(tensor: Tensor) -> c_void_p:
     # The backend takes ownership. Prevent Python-side double free.
     tensor._tensor = None  # type: ignore[attr-defined]
     return handle
+
+
+_SAFE_DTYPE_TO_NUMPY: Dict[str, np.dtype] = {
+    "BOOL": np.dtype(np.bool_),
+    "U8": np.dtype(np.uint8),
+    "I8": np.dtype(np.int8),
+    "I16": np.dtype(np.int16),
+    "U16": np.dtype(np.uint16),
+    "I32": np.dtype(np.int32),
+    "U32": np.dtype(np.uint32),
+    "I64": np.dtype(np.int64),
+    "U64": np.dtype(np.uint64),
+    "F16": np.dtype(np.float16),
+    "F32": np.dtype(np.float32),
+    "F64": np.dtype(np.float64),
+}
+
+
+_SAFE_DTYPE_NBYTES: Dict[str, int] = {
+    "BOOL": 1,
+    "U8": 1,
+    "I8": 1,
+    "I16": 2,
+    "U16": 2,
+    "I32": 4,
+    "U32": 4,
+    "I64": 8,
+    "U64": 8,
+    "F16": 2,
+    "BF16": 2,
+    "F32": 4,
+    "F64": 8,
+}
+
+
+def _numel(shape: Tuple[int, ...]) -> int:
+    n = 1
+    for d in shape:
+        n *= int(d)
+    return int(n)
+
+
+def _decode_safetensor_array(raw_u8: np.ndarray, dtype_code: str, shape: Tuple[int, ...], target_dtype: np.dtype) -> np.ndarray:
+    dtype_code = str(dtype_code).upper()
+    nbytes_per_elem = _SAFE_DTYPE_NBYTES.get(dtype_code)
+    if nbytes_per_elem is None:
+        raise RuntimeError(f"unsupported safetensors dtype: {dtype_code}")
+
+    expected_nbytes = _numel(shape) * int(nbytes_per_elem)
+    if int(raw_u8.size) != int(expected_nbytes):
+        raise RuntimeError(
+            f"safetensors payload size mismatch: dtype={dtype_code} shape={shape} "
+            f"payload={int(raw_u8.size)} expected={int(expected_nbytes)}"
+        )
+
+    if dtype_code == "BF16":
+        # BF16 payload is raw 16-bit lanes. Decode by bit pattern, never numeric-cast from uint16.
+        base_u16 = raw_u8.view(np.uint16).reshape(shape)
+        if target_dtype == np.dtype(np.uint16):
+            return _as_contiguous(base_u16, target_dtype)
+        if _BF16_DTYPE is not None and target_dtype == _BF16_DTYPE:
+            return _as_contiguous(base_u16.view(_BF16_DTYPE), target_dtype)
+        # Exact BF16 -> FP32 conversion via bit expansion.
+        as_f32 = (base_u16.astype(np.uint32) << 16).view(np.float32)
+        return _as_contiguous(as_f32, target_dtype)
+    else:
+        base_dtype = _SAFE_DTYPE_TO_NUMPY.get(dtype_code)
+        if base_dtype is None:
+            raise RuntimeError(f"unsupported safetensors dtype: {dtype_code}")
+        base = raw_u8.view(base_dtype)
+
+    base = base.reshape(shape)
+    return _as_contiguous(base, target_dtype)
+
+
+def _iter_safetensors_arrays(file: Path, target_dtype: np.dtype) -> Iterator[Tuple[str, np.ndarray]]:
+    with file.open("rb") as f:
+        prefix = f.read(8)
+        if len(prefix) != 8:
+            raise RuntimeError(f"invalid safetensors file: {file}")
+        header_len = int.from_bytes(prefix, byteorder="little", signed=False)
+        header_raw = f.read(header_len)
+        if len(header_raw) != header_len:
+            raise RuntimeError(f"invalid safetensors header: {file}")
+    try:
+        header = json.loads(header_raw.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"failed to parse safetensors header: {file}") from exc
+
+    data_offset = int(8 + header_len)
+    mmap_u8 = np.memmap(file, mode="r", dtype=np.uint8, offset=data_offset)
+    try:
+        for name, spec in header.items():
+            if name == "__metadata__":
+                continue
+            if not isinstance(spec, dict):
+                continue
+            dtype_code = str(spec.get("dtype", ""))
+            shape_raw = spec.get("shape", ())
+            offsets = spec.get("data_offsets", None)
+            if not isinstance(shape_raw, (list, tuple)):
+                raise RuntimeError(f"invalid shape in safetensors entry: name={name}")
+            if not isinstance(offsets, (list, tuple)) or len(offsets) != 2:
+                raise RuntimeError(f"invalid data_offsets in safetensors entry: name={name}")
+            shape = tuple(int(v) for v in shape_raw)
+            start = int(offsets[0])
+            end = int(offsets[1])
+            if start < 0 or end < start or end > int(mmap_u8.size):
+                raise RuntimeError(f"invalid data_offsets range in safetensors entry: name={name}")
+            raw = mmap_u8[start:end]
+            arr = _decode_safetensor_array(raw, dtype_code, shape, target_dtype=target_dtype)
+            yield str(name), arr
+    finally:
+        del mmap_u8
 
 
 @dataclass(frozen=True)
@@ -123,7 +259,7 @@ def _read_config(model_path: Path) -> dict:
         return json.load(f)
 
 
-def _parse_meta(model_path: Path) -> _MetaInfo:
+def _parse_meta(model_path: Path, max_model_len: Optional[int] = None) -> _MetaInfo:
     cfg = _read_config(model_path)
 
     dtype = _torch_dtype_to_datatype(cfg.get("torch_dtype"))
@@ -145,7 +281,7 @@ def _parse_meta(model_path: Path) -> _MetaInfo:
     cfg_maxseq = int(cfg["max_position_embeddings"])
     # KV-cache memory grows linearly with maxseq and can easily reach multiple GB.
     # Cap it by default to keep the stage-1 implementation stable on typical machines.
-    cap_maxseq = int(os.getenv("LLAISYS_MAXSEQ", "4096"))
+    cap_maxseq = int(max_model_len) if max_model_len is not None else int(os.getenv("LLAISYS_MAXSEQ", "4096"))
     maxseq = min(cfg_maxseq, cap_maxseq)
 
     return _MetaInfo(
@@ -181,73 +317,131 @@ def _build_meta_struct(meta: _MetaInfo) -> LlaisysQwen2Meta:
     )
 
 
-def _device_ids(device_id: int = 0):
-    arr = (c_int * 1)(device_id)
-    return arr, 1
+def _device_ids(device_ids: Optional[Sequence[int]] = None):
+    if device_ids is None or len(device_ids) == 0:
+        arr = (c_int * 1)(0)
+        return arr, 1
+    ids = [int(v) for v in device_ids]
+    arr = (c_int * len(ids))(*ids)
+    return arr, len(ids)
 
 
 class Qwen2:
     """Qwen2 model wrapper backed by the LLAISYS C++ runtime."""
 
-    def __init__(self, model_path: Path | str, device: DeviceType = DeviceType.CPU):
+    def __init__(
+        self,
+        model_path: Path | str,
+        device: DeviceType = DeviceType.CPU,
+        max_model_len: Optional[int] = None,
+        device_ids: Optional[Sequence[int]] = None,
+        tensor_parallel_size: int = 1,
+        tensor_parallel_rank: int = 0,
+    ):
         self._model_path = Path(model_path)
         self._device = device
+        self._model = None
 
-        meta = _parse_meta(self._model_path)
+        meta = _parse_meta(self._model_path, max_model_len=max_model_len)
         self._meta_info = meta
         self._meta_struct = _build_meta_struct(meta)
+        self._max_model_len = int(meta.maxseq)
+        self._tp_size = max(1, int(tensor_parallel_size))
+        self._tp_rank = max(0, int(tensor_parallel_rank))
+        if self._tp_rank >= self._tp_size:
+            raise ValueError(f"invalid tensor_parallel_rank={self._tp_rank} for tensor_parallel_size={self._tp_size}")
+        self._local_device_id = 0
+        if device_ids is not None and len(device_ids) > 0:
+            local_ids = [int(v) for v in device_ids]
+            if self._tp_rank >= len(local_ids):
+                raise ValueError(
+                    f"tensor_parallel_rank out of range for device_ids: rank={self._tp_rank} ndevice={len(local_ids)}"
+                )
+            self._local_device_id = int(local_ids[self._tp_rank])
 
-        dev_ids, ndev = _device_ids(0)
-        self._model = LIB_LLAISYS.llaisysQwen2ModelCreate(
-            byref(self._meta_struct),
+        dev_ids, ndev = _device_ids(device_ids)
+        create_params = LlaisysModelCreateParams(
+            int(ModelType.QWEN2),
+            cast(byref(self._meta_struct), c_void_p),
             device,
             dev_ids,
             ndev,
         )
+        self._model = LIB_LLAISYS.llaisysModelCreate(byref(create_params))
         if not self._model:
             raise RuntimeError("Failed to create Qwen2 model instance")
-        self._weights_ptr = LIB_LLAISYS.llaisysQwen2ModelWeights(self._model)
-        if not self._weights_ptr:
+        weights_ptr = cast(LIB_LLAISYS.llaisysModelWeights(self._model), POINTER(LlaisysQwen2Weights))
+        if not weights_ptr:
+            LIB_LLAISYS.llaisysModelDestroy(self._model)
+            self._model = None
             raise RuntimeError("Failed to acquire Qwen2 weight slots")
-        self._weights: LlaisysQwen2Weights = self._weights_ptr.contents
 
         self._np_dtype = _datatype_to_numpy_dtype(meta.dtype)
+        self._closed = False
 
         self._load_safetensors()
 
+    def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+
+        model = getattr(self, "_model", None)
+        self._model = None
+        if model:
+            LIB_LLAISYS.llaisysModelDestroy(model)
+
     def __del__(self):
-        if hasattr(self, "_model") and self._model:
-            LIB_LLAISYS.llaisysQwen2ModelDestroy(self._model)
+        # Avoid native destroy in __del__. Finalizer timing during GC can race with
+        # other Python/C++ objects and cause hard crashes. Use explicit close() chain.
+        try:
             self._model = None
+            self._closed = True
+        except Exception:
+            pass
 
     # -------------------- Weight Loading --------------------
+
+    def _replace_weight_slot(self, field: str, layer_idx: int, handle: c_void_p) -> None:
+        rc = int(
+            LIB_LLAISYS.llaisysModelReplaceWeight(
+                self._model,
+                field.encode("utf-8"),
+                c_int32(layer_idx),
+                handle,
+            )
+        )
+        if rc != 0:
+            # replace failed -> backend did not take ownership, so free the new handle.
+            LIB_LLAISYS.tensorDestroy(handle)
+            raise RuntimeError(f"Failed to replace weight slot field={field} layer={layer_idx} rc={rc}")
 
     def _assign_global(self, field: str, array: np.ndarray) -> None:
         tensor = Tensor(
             shape=array.shape,
             dtype=self._meta_info.dtype,
             device=self._device,
-            device_id=0,
+            device_id=int(self._local_device_id),
         )
         tensor.load(array.ctypes.data_as(c_void_p))
         handle = _detach_tensor_handle(tensor)
-        setattr(self._weights, field, handle)
+        self._replace_weight_slot(field, -1, handle)
 
     def _assign_layer(self, field: str, layer_idx: int, array: np.ndarray) -> None:
-        slots = getattr(self._weights, field)
         tensor = Tensor(
             shape=array.shape,
             dtype=self._meta_info.dtype,
             device=self._device,
-            device_id=0,
+            device_id=int(self._local_device_id),
         )
         tensor.load(array.ctypes.data_as(c_void_p))
         handle = _detach_tensor_handle(tensor)
-        slots[layer_idx] = handle
+        self._replace_weight_slot(field, layer_idx, handle)
 
     def _map_and_assign(self, name: str, array: np.ndarray) -> bool:
         if name in _GLOBAL_NAMES:
-            self._assign_global(_GLOBAL_NAMES[name], array)
+            field = _GLOBAL_NAMES[name]
+            self._assign_global(field, self._maybe_shard_array(field, array))
             return True
 
         for pattern, field in _LAYER_PATTERNS:
@@ -257,10 +451,31 @@ class Qwen2:
             layer_idx = int(m.group(1))
             if layer_idx < 0 or layer_idx >= self._meta_info.nlayer:
                 raise ValueError(f"Layer index out of range for {name}: {layer_idx}")
-            self._assign_layer(field, layer_idx, array)
+            self._assign_layer(field, layer_idx, self._maybe_shard_array(field, array))
             return True
 
         return False
+
+    def _maybe_shard_array(self, field: str, array: np.ndarray) -> np.ndarray:
+        if self._tp_size <= 1:
+            return array
+        shard_dim = _TP_SHARD_DIM_BY_FIELD.get(field)
+        if shard_dim is None:
+            # Replicated weights in TP mode.
+            return array
+        if shard_dim < 0 or shard_dim >= array.ndim:
+            raise ValueError(f"invalid shard dim for field={field}: dim={shard_dim}, ndim={array.ndim}")
+        dim_size = int(array.shape[shard_dim])
+        if dim_size % self._tp_size != 0:
+            raise ValueError(
+                f"TP shard requires divisible dim: field={field} dim_size={dim_size} tp_size={self._tp_size}"
+            )
+        chunk = dim_size // self._tp_size
+        start = int(self._tp_rank) * chunk
+        end = start + chunk
+        slicer = [slice(None)] * array.ndim
+        slicer[shard_dim] = slice(start, end)
+        return _as_contiguous(array[tuple(slicer)], self._np_dtype)
 
     def _load_safetensors(self) -> None:
         safetensor_files = sorted(self._model_path.glob("*.safetensors"))
@@ -268,60 +483,25 @@ class Qwen2:
             raise FileNotFoundError(f"No safetensors files found under {self._model_path}")
 
         for file in safetensor_files:
-            data = safetensors.safe_open(file, framework="numpy", device="cpu")
-            for name in data.keys():
-                array = data.get_tensor(name)
-                array = _as_contiguous(array, self._np_dtype)
+            for name, array in _iter_safetensors_arrays(file, target_dtype=self._np_dtype):
                 self._map_and_assign(name, array)
 
     # -------------------- Inference --------------------
 
-    def _infer(self, token_ids: Sequence[int]) -> int:
-        if not token_ids:
-            raise ValueError("token_ids must be non-empty")
-        buf = (c_int64 * len(token_ids))(*[int(t) for t in token_ids])
-        next_token = int(
-            LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, buf, c_size_t(len(token_ids)))
-        )
-        if next_token < 0 or next_token >= self._meta_info.voc:
-            raise RuntimeError(f"Invalid token id returned from infer: {next_token}")
-        return next_token
+    @property
+    def max_seq_len(self) -> int:
+        return int(self._max_model_len)
 
-    def generate(
-        self,
-        inputs: Sequence[int],
-        max_new_tokens: Optional[int] = None,
-        top_k: int = 1,
-        top_p: float = 0.8,
-        temperature: float = 0.8,
-    ) -> Sequence[int]:
-        # Sampling knobs are accepted for interface compatibility; the backend currently uses argmax.
-        _ = (top_k, top_p, temperature)
+    @property
+    def end_token_id(self) -> int:
+        return int(self._meta_info.end_token)
 
-        tokens = [int(t) for t in inputs]
-        if not tokens:
-            return tokens
+    def forward(self, kv_state, fin: ModelForwardInput, fout: ModelForwardOutput) -> int:
+        if not self._model or kv_state is None:
+            return -1
+        return int(LIB_LLAISYS.llaisysModelForward(self._model, kv_state, byref(fin), byref(fout)))
 
-        if len(tokens) > self._meta_info.maxseq:
-            raise ValueError("Prompt length exceeds maxseq")
-
-        remaining = self._meta_info.maxseq - len(tokens)
-        if remaining <= 0:
-            return tokens
-
-        max_new = remaining if max_new_tokens is None else min(int(max_new_tokens), remaining)
-        if max_new <= 0:
-            return tokens
-
-        next_token = self._infer(tokens)
-        tokens.append(next_token)
-        if next_token == self._meta_info.end_token:
-            return tokens
-
-        for _ in range(max_new - 1):
-            next_token = self._infer([tokens[-1]])
-            tokens.append(next_token)
-            if next_token == self._meta_info.end_token:
-                break
-
-        return tokens
+    def bind_parallel_context(self, parallel_context) -> int:
+        if not self._model or parallel_context is None:
+            return -1
+        return int(LIB_LLAISYS.llaisysModelBindParallelContext(self._model, parallel_context))

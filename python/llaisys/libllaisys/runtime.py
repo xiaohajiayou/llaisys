@@ -10,6 +10,11 @@ device_synchronize_api = CFUNCTYPE(None)
 create_stream_api = CFUNCTYPE(llaisysStream_t)
 destroy_stream_api = CFUNCTYPE(None, llaisysStream_t)
 stream_synchronize_api = CFUNCTYPE(None, llaisysStream_t)
+create_event_api = CFUNCTYPE(llaisysEvent_t)
+destroy_event_api = CFUNCTYPE(None, llaisysEvent_t)
+event_record_api = CFUNCTYPE(None, llaisysEvent_t, llaisysStream_t)
+stream_wait_event_api = CFUNCTYPE(None, llaisysStream_t, llaisysEvent_t)
+event_synchronize_api = CFUNCTYPE(None, llaisysEvent_t)
 
 malloc_device_api = CFUNCTYPE(c_void_p, c_size_t)
 free_device_api = CFUNCTYPE(None, c_void_p)
@@ -29,6 +34,11 @@ class LlaisysRuntimeAPI(Structure):
         ("create_stream", create_stream_api),
         ("destroy_stream", destroy_stream_api),
         ("stream_synchronize", stream_synchronize_api),
+        ("create_event", create_event_api),
+        ("destroy_event", destroy_event_api),
+        ("event_record", event_record_api),
+        ("stream_wait_event", stream_wait_event_api),
+        ("event_synchronize", event_synchronize_api),
         ("malloc_device", malloc_device_api),
         ("free_device", free_device_api),
         ("malloc_host", malloc_host_api),
@@ -46,3 +56,10 @@ def load_runtime(lib):
 
     lib.llaisysSetContextRuntime.argtypes = [llaisysDeviceType_t, c_int]
     lib.llaisysSetContextRuntime.restype = None
+    lib.llaisysGetContextComputeStream.argtypes = [llaisysDeviceType_t, c_int]
+    lib.llaisysGetContextComputeStream.restype = llaisysStream_t
+
+    lib.llaisysNvtxRangePush.argtypes = [ctypes.c_char_p]
+    lib.llaisysNvtxRangePush.restype = None
+    lib.llaisysNvtxRangePop.argtypes = []
+    lib.llaisysNvtxRangePop.restype = None

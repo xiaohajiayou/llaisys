@@ -29,6 +29,26 @@ void streamSynchronize(llaisysStream_t stream) {
     // do nothing
 }
 
+llaisysEvent_t createEvent() {
+    return (llaisysEvent_t)0; // null event
+}
+
+void destroyEvent(llaisysEvent_t event) {
+    // do nothing
+}
+
+void eventRecord(llaisysEvent_t event, llaisysStream_t stream) {
+    // do nothing
+}
+
+void streamWaitEvent(llaisysStream_t stream, llaisysEvent_t event) {
+    // do nothing
+}
+
+void eventSynchronize(llaisysEvent_t event) {
+    // do nothing
+}
+
 void *mallocDevice(size_t size) {
     return std::malloc(size);
 }
@@ -46,10 +66,12 @@ void freeHost(void *ptr) {
 }
 
 void memcpySync(void *dst, const void *src, size_t size, llaisysMemcpyKind_t kind) {
+    LLAISYS_NVTX_SCOPE(llaisys::utils::nvtx_memcpy_tag(kind, false));
     std::memcpy(dst, src, size);
 }
 
 void memcpyAsync(void *dst, const void *src, size_t size, llaisysMemcpyKind_t kind, llaisysStream_t stream) {
+    LLAISYS_NVTX_SCOPE(llaisys::utils::nvtx_memcpy_tag(kind, true));
     memcpySync(dst, src, size, kind);
 }
 
@@ -60,6 +82,11 @@ static const LlaisysRuntimeAPI RUNTIME_API = {
     &createStream,
     &destroyStream,
     &streamSynchronize,
+    &createEvent,
+    &destroyEvent,
+    &eventRecord,
+    &streamWaitEvent,
+    &eventSynchronize,
     &mallocDevice,
     &freeDevice,
     &mallocHost,

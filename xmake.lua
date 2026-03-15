@@ -13,8 +13,26 @@ option("nv-gpu")
     set_description("Whether to compile implementations for Nvidia GPU")
 option_end()
 
+option("nv-cudnn")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Whether to enable cuDNN backend integration for Nvidia GPU")
+option_end()
+
+option("nv-nccl")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Whether to enable NCCL backend integration for Nvidia GPU")
+option_end()
+
 if has_config("nv-gpu") then
     add_defines("ENABLE_NVIDIA_API")
+    if os.isdir("/usr/local/cuda/include") then
+        add_sysincludedirs("/usr/local/cuda/include")
+    end
+    if has_config("nv-nccl") then
+        add_defines("ENABLE_NCCL_API")
+    end
     includes("xmake/nvidia.lua")
 end
 
@@ -25,6 +43,9 @@ target("llaisys-utils")
     set_warnings("all", "error")
     if not is_plat("windows") then
         add_cxflags("-fPIC", "-Wno-unknown-pragmas")
+    end
+    if has_config("nv-gpu") then
+        add_links("nvToolsExt")
     end
 
     add_files("src/utils/*.cpp")
@@ -105,7 +126,18 @@ target("llaisys")
 
     set_languages("cxx17")
     set_warnings("all", "error")
+    if not is_plat("windows") then
+        add_ldflags("-fopenmp")
+        add_shflags(
+            "-Wl,--export-dynamic-symbol=llaisysModelForward",
+            "-Wl,--export-dynamic-symbol=llaisysSamplerSample"
+        )
+        add_syslinks("gomp")
+    end
     add_files("src/llaisys/*.cc")
+    add_files("src/llaisys/kv_cache/*.cpp")
+    add_files("src/llaisys/workspace/*.cpp")
+    add_files("src/llaisys/weights/*.cpp")
     add_files("src/llaisys/qwen2/*.cc")
     add_files("src/llaisys/qwen2/*.cpp")
     set_installdir(".")
@@ -119,6 +151,9 @@ target("llaisys")
         end
         if is_plat("linux") then
             os.cp("lib/*.so", "python/llaisys/libllaisys/")
+        end
+        if is_plat("macosx") then
+            os.cp("lib/*.dylib", "python/llaisys/libllaisys/")
         end
     end)
 target_end()

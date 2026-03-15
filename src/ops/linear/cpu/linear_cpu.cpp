@@ -3,6 +3,7 @@
 #include "../../../utils.hpp"
 
 #include <cstring>
+#include <cstdint>
 
 template <typename T>
 void linear_(T *out,
@@ -12,8 +13,13 @@ void linear_(T *out,
              size_t M,
              size_t K,
              size_t N) {
-    for (size_t m = 0; m < M; ++m) {
-        for (size_t n = 0; n < N; ++n) {
+    #if defined(_OPENMP)
+    #pragma omp parallel for collapse(2) schedule(static)
+    #endif
+    for (int64_t m_i = 0; m_i < static_cast<int64_t>(M); ++m_i) {
+        for (int64_t n_i = 0; n_i < static_cast<int64_t>(N); ++n_i) {
+            const size_t m = static_cast<size_t>(m_i);
+            const size_t n = static_cast<size_t>(n_i);
 
             float acc = 0.0f;   // ✅ 用 float 累加
 
@@ -33,61 +39,6 @@ void linear_(T *out,
         }
     }
 }
-
-
-// template <typename T>
-// void linear_(T *out,
-//                     const T *in,
-//                     const T *weight,
-//                     const T *bias,
-//                     size_t M,
-//                     size_t K,
-//                     size_t N) {
-
-//     // 🔹 Block 大小（可调优）
-//     constexpr size_t BM = 64;   // 行块
-//     constexpr size_t BN = 64;   // 列块
-//     constexpr size_t BK = 64;   // K 维块
-
-//     for (size_t m0 = 0; m0 < M; m0 += BM) {
-//         for (size_t n0 = 0; n0 < N; n0 += BN) {
-//             for (size_t k0 = 0; k0 < K; k0 += BK) {
-
-//                 size_t m_max = std::min(m0 + BM, M);
-//                 size_t n_max = std::min(n0 + BN, N);
-//                 size_t k_max = std::min(k0 + BK, K);
-
-//                 for (size_t m = m0; m < m_max; ++m) {
-//                     const T* x_row = in + m * K;
-//                     T* y_row = out + m * N;
-
-//                     for (size_t n = n0; n < n_max; ++n) {
-
-//                         float acc;
-
-//                         // 只有第一次 k-block 时才加 bias
-//                         if (k0 == 0) {
-//                             acc = bias ? llaisys::utils::cast<float>(bias[n]) : 0.0f;
-//                         } else {
-//                             acc = llaisys::utils::cast<float>(y_row[n]);
-//                         }
-
-//                         const T* w_row = weight + n * K;
-
-//                         // K-block 累加
-//                         for (size_t k = k0; k < k_max; ++k) {
-//                             acc += llaisys::utils::cast<float>(x_row[k]) *
-//                                    llaisys::utils::cast<float>(w_row[k]);
-//                         }
-
-//                         y_row[n] = llaisys::utils::cast<T>(acc);
-//                     }
-//                 }
-//             }
-//         }
-//     }
-// }
-
 
 namespace llaisys::ops::cpu {
 
@@ -134,5 +85,5 @@ namespace llaisys::ops::cpu {
             EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
         }
     }
-    
+
     } // namespace llaisys::ops::cpu

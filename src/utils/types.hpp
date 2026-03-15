@@ -1,3 +1,5 @@
+#pragma once
+
 #include "llaisys.h"
 
 #include <iostream>
@@ -59,6 +61,22 @@ inline size_t dsize(llaisysDataType_t dtype) {
     default:
         throw std::invalid_argument("Unsupported or invalid data type.");
     }
+}
+
+inline llaisysMemcpyKind_t infer_memcpy_kind(llaisysDeviceType_t dst, llaisysDeviceType_t src) {
+    if (dst == LLAISYS_DEVICE_CPU && src == LLAISYS_DEVICE_CPU) {
+        return LLAISYS_MEMCPY_H2H;
+    }
+    if (dst == LLAISYS_DEVICE_NVIDIA && src == LLAISYS_DEVICE_CPU) {
+        return LLAISYS_MEMCPY_H2D;
+    }
+    if (dst == LLAISYS_DEVICE_CPU && src == LLAISYS_DEVICE_NVIDIA) {
+        return LLAISYS_MEMCPY_D2H;
+    }
+    if (dst == LLAISYS_DEVICE_NVIDIA && src == LLAISYS_DEVICE_NVIDIA) {
+        return LLAISYS_MEMCPY_D2D;
+    }
+    throw std::invalid_argument("Unsupported memcpy route.");
 }
 
 inline const char *dtype_to_str(llaisysDataType_t dtype) {

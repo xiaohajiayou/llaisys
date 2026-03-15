@@ -17,7 +17,14 @@ struct LlaisysQwen2ModelImpl {
                                    llaisysDeviceType_t device,
                                    int *device_ids,
                                    int ndevice)
-        : model(std::make_unique<Qwen2Model>(meta, device, device_ids, ndevice)) {}
+        : model(std::make_unique<Qwen2Model>(meta, device, device_ids, ndevice)) {
+        CHECK_ARGUMENT(model != nullptr, "Qwen2: failed to allocate model");
+        const int rc = model->configure_runtime(
+            16,
+            static_cast<size_t>(meta.maxseq),
+            static_cast<int64_t>(meta.maxseq));
+        CHECK_ARGUMENT(rc == 0, "Qwen2: failed to configure runtime");
+    }
 
     std::unique_ptr<Qwen2Model> model;
 };
@@ -81,18 +88,6 @@ __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen
         fail_fast_unknown("llaisysQwen2ModelWeights");
     }
     return nullptr;
-}
-
-__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
-    try {
-        CHECK_ARGUMENT(model != nullptr && model->impl != nullptr, "Qwen2: model must not be null");
-        return model->impl->model->infer(token_ids, ntoken);
-    } catch (const std::exception &e) {
-        fail_fast("llaisysQwen2ModelInfer", e);
-    } catch (...) {
-        fail_fast_unknown("llaisysQwen2ModelInfer");
-    }
-    return 0;
 }
 
 } // extern "C"

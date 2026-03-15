@@ -5,7 +5,7 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import random_tensor, check_equal, benchmark
+from test.test_utils import random_tensor, check_equal, benchmark
 
 
 def torch_self_attention(attn_val, query, key, value, scale):
@@ -15,7 +15,7 @@ def torch_self_attention(attn_val, query, key, value, scale):
     L, S = query.size(-2), key.size(-2)
     attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
 
-    temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=S-L)
+    temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=S-L)
     attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
     attn_bias.to(query.dtype)
 

@@ -13,6 +13,12 @@ __C {
     typedef llaisysStream_t (*create_stream_api)();
     typedef void (*destroy_stream_api)(llaisysStream_t);
     typedef void (*stream_synchronize_api)(llaisysStream_t);
+    // Event
+    typedef llaisysEvent_t (*create_event_api)();
+    typedef void (*destroy_event_api)(llaisysEvent_t);
+    typedef void (*event_record_api)(llaisysEvent_t, llaisysStream_t);
+    typedef void (*stream_wait_event_api)(llaisysStream_t, llaisysEvent_t);
+    typedef void (*event_synchronize_api)(llaisysEvent_t);
     // Memory
     typedef void *(*malloc_device_api)(size_t);
     typedef void (*free_device_api)(void *);
@@ -29,6 +35,11 @@ __C {
         create_stream_api create_stream;
         destroy_stream_api destroy_stream;
         stream_synchronize_api stream_synchronize;
+        create_event_api create_event;
+        destroy_event_api destroy_event;
+        event_record_api event_record;
+        stream_wait_event_api stream_wait_event;
+        event_synchronize_api event_synchronize;
         malloc_device_api malloc_device;
         free_device_api free_device;
         malloc_host_api malloc_host;
@@ -42,6 +53,13 @@ __C {
 
     // Llaisys API for switching device context
     __export void llaisysSetContextRuntime(llaisysDeviceType_t, int);
+    // Return compute stream from current thread context runtime bound to (device_type, device_id).
+    // nullptr on failure.
+    __export llaisysStream_t llaisysGetContextComputeStream(llaisysDeviceType_t, int);
+
+    // Lightweight NVTX helpers for Python-side timeline instrumentation.
+    __export void llaisysNvtxRangePush(const char *);
+    __export void llaisysNvtxRangePop(void);
 }
 
 #endif // LLAISYS_RUNTIME_H
