@@ -908,11 +908,11 @@ static bool ensure_cudnn_plan_ready(CudnnPagedPlan &plan,
     // Dynamic-shape mode with bounded templates: runtime shapes can shrink via override_*.
     // Rebuild when any runtime bound grows beyond built template, or cache geometry changes.
     bool need_rebuild = force_rebuild || !plan.graph_ready;
-    if (!need_rebuild) {
-        if (b_exec_safe > plan.built_b) {
-            need_rebuild = true;
-        }
-    }
+    // if (!need_rebuild) {
+    //     if (b_exec_safe > plan.built_b) {
+    //         need_rebuild = true;
+    //     }
+    // }
     if (!need_rebuild) {
         if (plan.built_num_blocks != num_blocks || plan.built_block_size != block_size) {
             need_rebuild = true;
@@ -948,9 +948,15 @@ static bool ensure_cudnn_plan_ready(CudnnPagedPlan &plan,
     }
 
     auto io_dtype = dtype == LLAISYS_DTYPE_BF16 ? fe::DataType_t::BFLOAT16 : fe::DataType_t::HALF;
-    const int64_t b_plan = std::max(b_exec_safe, warmup_b);
+    // const int64_t b_plan = std::max(b_exec_safe, warmup_b);
     // const int64_t s_q_plan = is_prefill ? pick_prefill_s_q_plan(s_q_exec, warmup_s_q) : s_q_exec;
-    // const int64_t b_plan = b_exec_safe;
+    if (b_exec_safe > warmup_b) {
+        printf(
+            "[cudnn] b_exec_safe=%lld warmup_b=%lld\n",
+            static_cast<long long>(b_exec_safe),
+            static_cast<long long>(warmup_b));
+    }
+    const int64_t b_plan = warmup_b;
     const int64_t s_q_plan = s_q_exec;
     const int32_t table_size_plan = table_size;
     const int64_t max_seq_len_kv_plan = max_seq_len_kv;
@@ -1245,29 +1251,29 @@ bool cudnn_try_paged_attention_decode(tensor_t attn_val,
                                    override_strides);
     };
     auto exec_status = run_decode_execute();
-    if (exec_status.is_bad()) {
-        // Dynamic-shape execution may fail for a plan that was built with a
-        // smaller template. Force a one-shot rebuild and retry once.
-        if (ensure_cudnn_plan_ready(plan,
-                                    state->handle,
-                                    q->dtype(),
-                                    false,
-                                    b_exec,
-                                    prepared.cudnn_warmup_b,
-                                    max_seq_len_q,
-                                    nhead,
-                                    nkvhead,
-                                    head_dim,
-                                    num_blocks,
-                                    table_size,
-                                    max_seq_len_kv,
-                                    block_size,
-                                    scale,
-                                    /*force_rebuild=*/true) &&
-            ensure_cudnn_workspace(plan)) {
-            exec_status = run_decode_execute();
-        }
-    }
+    // if (exec_status.is_bad()) {
+    //     // Dynamic-shape execution may fail for a plan that was built with a
+    //     // smaller template. Force a one-shot rebuild and retry once.
+    //     if (ensure_cudnn_plan_ready(plan,
+    //                                 state->handle,
+    //                                 q->dtype(),
+    //                                 false,
+    //                                 b_exec,
+    //                                 prepared.cudnn_warmup_b,
+    //                                 max_seq_len_q,
+    //                                 nhead,
+    //                                 nkvhead,
+    //                                 head_dim,
+    //                                 num_blocks,
+    //                                 table_size,
+    //                                 max_seq_len_kv,
+    //                                 block_size,
+    //                                 scale,
+    //                                 /*force_rebuild=*/true) &&
+    //         ensure_cudnn_workspace(plan)) {
+    //         exec_status = run_decode_execute();
+    //     }
+    // }
     if (exec_status.is_bad()) {
         static bool warned_exec = false;
         if (!warned_exec) {

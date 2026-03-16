@@ -49,7 +49,7 @@ class PreparedTensors:
     cudnn_page_table: Tensor | None = None
     cudnn_qo_ragged_offset: Tensor | None = None
     cudnn_b_exec: int = 0
-    cudnn_warmup_b: int = 0
+    cudnn_warmup_b: int = 8
 
 
 @dataclass
@@ -88,8 +88,8 @@ class CudnnBlockMeta:
     cudnn_page_table: Tensor
     cudnn_qo_ragged_offset: Tensor | None
     cudnn_b_exec: int
-    cudnn_warmup_b: int
     keepalive: list[Tensor]
+    cudnn_warmup_b: int = 8
 
 
 class GPUModelRunner:
